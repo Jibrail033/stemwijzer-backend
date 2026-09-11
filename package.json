@@ -1,0 +1,33 @@
+{
+  "name": "stemwijzer-backend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Stemwijzer Node.js backend",
+  "main": "dist/index.js",
+  "scripts": {
+    "start": "dotenv -e .env -- nodemon src/index.ts",
+    "dev": "npm start",
+    "start:prod": "node dist/index.js",
+    "db:init": "dotenv -e .env -- ts-node src/database/init.ts",
+    "test": "npm run build && node --test dist/database/database.test.js dist/statements/statements.test.js dist/matching/matching.test.js dist/parties/parties.test.js",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "eslint": "eslint .",
+    "lint": "npm run eslint",
+    "lint:fix": "eslint . --fix"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.39.2",
+    "@stylistic/eslint-plugin": "5.7.1",
+    "@types/node": "^25.0.10",
+    "dotenv-cli": "10.0.0",
+    "eslint": "9.39.2",
+    "nodemon": "3.1.11",
+    "ts-node": "10.9.2",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.54.0"
+  }
+}
