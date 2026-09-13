@@ -6,3 +6,21 @@ export interface StatementResult {
   readonly text: SQLOutputValue
   readonly partyAnswers: Record<string, SQLOutputValue>[]
 }
+
+export interface CreateStatementInput {
+  readonly text: string
+  readonly isActive: boolean
+}
+
+export interface UpdateStatementInput {
+  readonly text?: string
+  readonly isActive?: boolean
+}
+
+export interface StatementRecord {
+  readonly id: number
+  readonly text: string
+  readonly isActive: boolean
+  readonly createdAt: string
+  readonly updatedAt: string
+}

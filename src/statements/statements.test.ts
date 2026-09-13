@@ -1,14 +1,18 @@
-import { deepStrictEqual, strictEqual } from 'node:assert';
+import { deepStrictEqual, strictEqual, notStrictEqual } from 'node:assert';
 import { once } from 'node:events';
 import { it } from 'node:test';
 import { openDatabase } from '../database';
 import { createApp } from '../server';
 
 const ok = 200;
+const created = 201;
+const noContent = 204;
 const badRequest = 400;
 const notFound = 404;
 const methodNotAllowed = 405;
+const conflict = 409;
 const internalServerError = 500;
+const nonExistentId = 999;
 
 void it('serves statements and party answers over HTTP', async (context) => {
   const database = openDatabase(':memory:');
@@ -98,11 +102,11 @@ void it('serves statements and party answers over HTTP', async (context) => {
       }
     });
 
-    await context.test('only allows GET requests', async () => {
-      const response = await fetch(`${baseUrl}/statements?index=0`, { method: 'POST' });
+    await context.test('only allows GET and POST requests on /statements', async () => {
+      const response = await fetch(`${baseUrl}/statements?index=0`, { method: 'PUT' });
 
       strictEqual(response.status, methodNotAllowed);
-      strictEqual(response.headers.get('allow'), 'GET');
+      strictEqual(response.headers.get('allow'), 'GET, POST');
       await response.text();
     });
 
@@ -131,6 +135,213 @@ void it('serves statements and party answers over HTTP', async (context) => {
 
       strictEqual(response.status, internalServerError);
       deepStrictEqual(await response.json(), { error: 'De stelling kon niet worden opgehaald.' });
+    });
+  }
+  finally {
+    if (server.listening) {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => {
+          if (error) {
+            reject(error);
+          }
+          else {
+            resolve();
+          }
+        });
+      });
+    }
+
+    if (database.isOpen) {
+      database.close();
+    }
+  }
+});
+
+void it('creates, lists, reads, updates and deletes statements over HTTP', async (context) => {
+  const database = openDatabase(':memory:');
+  const server = createApp(database);
+
+  try {
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+
+    const address = server.address();
+
+    if (!address || typeof address === 'string') {
+      throw new Error('Expected a TCP address');
+    }
+
+    const baseUrl = `http://127.0.0.1:${String(address.port)}/statements`;
+
+    async function post(body: unknown): Promise<Response> {
+      return fetch(baseUrl, { method: 'POST', headers: [['content-type', 'application/json']], body: JSON.stringify(body) });
+    }
+
+    async function patch(id: number, body: unknown): Promise<Response> {
+      return fetch(`${baseUrl}/${String(id)}`, { method: 'PATCH', headers: [['content-type', 'application/json']], body: JSON.stringify(body) });
+    }
+
+    await context.test('creates a statement, provisioning a technical superadmin as needed', async () => {
+      const response = await post({ text: 'Nieuwe stelling' });
+      const row = database.prepare('SELECT * FROM statements WHERE id = 1').get();
+      const admin = database.prepare('SELECT * FROM superadmins WHERE email = \'statements-import@stemwijzer.invalid\'').get();
+
+      if (row === undefined || admin === undefined) {
+        throw new Error('Expected a statement and a technical superadmin to exist.');
+      }
+
+      strictEqual(response.status, created);
+      deepStrictEqual(await response.json(), {
+        id: 1, text: 'Nieuwe stelling', isActive: true,
+        createdAt: row['created_at'], updatedAt: row['updated_at'],
+      });
+
+      const secondResponse = await post({ text: 'Tweede stelling', isActive: false });
+      const adminCount = database.prepare('SELECT COUNT(*) AS count FROM superadmins').get();
+
+      strictEqual(secondResponse.status, created);
+
+      if (adminCount === undefined) {
+        throw new Error('Expected the superadmin count to be returned.');
+      }
+
+      strictEqual(adminCount['count'], 1);
+    });
+
+    await context.test('rejects invalid create bodies without inserting rows', async () => {
+      const before = database.prepare('SELECT COUNT(*) AS count FROM statements').get();
+
+      for (const body of [null, [], 'text', {}, { text: '' }, { text: '  ' }, { text: 'x\0y' }, { text: 'Valid', isActive: 'yes' }, { text: 'Valid', id: 1 }]) {
+        const response = await post(body);
+
+        strictEqual(response.status, badRequest, JSON.stringify(body));
+        await response.text();
+      }
+
+      deepStrictEqual(database.prepare('SELECT COUNT(*) AS count FROM statements').get(), before);
+    });
+
+    await context.test('lists all statements ordered by id, active and inactive', async () => {
+      const response = await fetch(`${baseUrl}/all`);
+      const rows = database.prepare('SELECT * FROM statements ORDER BY id').all();
+
+      strictEqual(response.status, ok);
+      deepStrictEqual(await response.json(), rows.map(row => ({
+        id: row['id'], text: row['text'], isActive: row['is_active'] === 1,
+        createdAt: row['created_at'], updatedAt: row['updated_at'],
+      })));
+    });
+
+    await context.test('only allows GET on /statements/all', async () => {
+      const response = await fetch(`${baseUrl}/all`, { method: 'POST' });
+
+      strictEqual(response.status, methodNotAllowed);
+      strictEqual(response.headers.get('allow'), 'GET');
+      await response.text();
+    });
+
+    await context.test('reads a single statement by id, or 404 when missing', async () => {
+      const found = await fetch(`${baseUrl}/1`);
+      const row = database.prepare('SELECT * FROM statements WHERE id = 1').get();
+
+      if (row === undefined) {
+        throw new Error('Expected the statement to exist.');
+      }
+
+      strictEqual(found.status, ok);
+      deepStrictEqual(await found.json(), {
+        id: 1, text: 'Nieuwe stelling', isActive: true,
+        createdAt: row['created_at'], updatedAt: row['updated_at'],
+      });
+
+      const missing = await fetch(`${baseUrl}/${String(nonExistentId)}`);
+
+      strictEqual(missing.status, notFound);
+      await missing.text();
+    });
+
+    await context.test('rejects an invalid id in the URL', async () => {
+      const response = await fetch(`${baseUrl}/not-a-number`);
+
+      strictEqual(response.status, badRequest);
+      await response.text();
+    });
+
+    await context.test('updates one or more fields and refreshes updatedAt', async () => {
+      database.exec('UPDATE statements SET updated_at = \'2000-01-01 00:00:00\' WHERE id = 1');
+
+      const before = database.prepare('SELECT updated_at FROM statements WHERE id = 1').get();
+      const response = await patch(1, { text: 'Gewijzigde stelling', isActive: false });
+      const after = database.prepare('SELECT * FROM statements WHERE id = 1').get();
+
+      if (before === undefined || after === undefined) {
+        throw new Error('Expected the statement row to exist.');
+      }
+
+      strictEqual(response.status, ok);
+      deepStrictEqual(await response.json(), {
+        id: 1, text: 'Gewijzigde stelling', isActive: false,
+        createdAt: after['created_at'], updatedAt: after['updated_at'],
+      });
+      strictEqual(after['is_active'], 0);
+      notStrictEqual(after['updated_at'], before['updated_at']);
+    });
+
+    await context.test('rejects invalid or empty update bodies without changing data', async () => {
+      const before = database.prepare('SELECT * FROM statements WHERE id = 1').get();
+
+      for (const body of [{}, { text: '' }, { isActive: 'no' }, { id: 5 }, { unknown: 'field' }]) {
+        const response = await patch(1, body);
+
+        strictEqual(response.status, badRequest, JSON.stringify(body));
+        await response.text();
+      }
+
+      deepStrictEqual(database.prepare('SELECT * FROM statements WHERE id = 1').get(), before);
+    });
+
+    await context.test('returns 404 when updating a statement that does not exist', async () => {
+      const response = await patch(nonExistentId, { text: 'Nieuw' });
+
+      strictEqual(response.status, notFound);
+      await response.text();
+    });
+
+    await context.test('only allows GET, PATCH and DELETE on a statement by id', async () => {
+      const response = await fetch(`${baseUrl}/1`, { method: 'POST' });
+
+      strictEqual(response.status, methodNotAllowed);
+      strictEqual(response.headers.get('allow'), 'GET, PATCH, DELETE');
+      await response.text();
+    });
+
+    await context.test('blocks deletion while party answers reference the statement', async () => {
+      database.exec(`
+        INSERT INTO parties (id, name) VALUES (1, 'Testpartij');
+        INSERT INTO party_answers (party_id, statement_id, answer) VALUES (1, 1, 'eens');
+      `);
+
+      const response = await fetch(`${baseUrl}/1`, { method: 'DELETE' });
+
+      strictEqual(response.status, conflict);
+      await response.text();
+      notStrictEqual(database.prepare('SELECT 1 FROM statements WHERE id = 1').get(), undefined);
+    });
+
+    await context.test('deletes a statement without references and returns 404 afterwards', async () => {
+      const response = await fetch(`${baseUrl}/2`, { method: 'DELETE' });
+
+      strictEqual(response.status, noContent);
+
+      const gone = await fetch(`${baseUrl}/2`);
+
+      strictEqual(gone.status, notFound);
+      await gone.text();
+
+      const secondDelete = await fetch(`${baseUrl}/2`, { method: 'DELETE' });
+
+      strictEqual(secondDelete.status, notFound);
+      await secondDelete.text();
     });
   }
   finally {

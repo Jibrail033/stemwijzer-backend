@@ -40,6 +40,10 @@ Gebruik `openDatabase()` uit `src/database/index.ts` om vanuit de backend een ve
 
 De lokale database wordt niet in versiebeheer opgenomen. Initialisatie maakt geen accounts of voorbeeldgegevens aan. Wijzigingen aan bestaande tabellen vereisen later een migratie; `db:init` wijzigt geen bestaande tabeldefinities.
 
+### Testdata inladen
+
+Voer `npm run db:seed` uit om `database/seed-statements.sql`, `database/seed-parties.sql` en `database/seed-party-answers.sql` uit te voeren tegen de lokale database. Dit voegt de 30 voorbeeldstellingen, een aantal fictieve testpartijen en bijpassende partijantwoorden toe, zodat de CRUD- en matchingroutes direct met echte data te proberen zijn. Alle seed-bestanden zijn idempotent (`WHERE NOT EXISTS`): opnieuw draaien maakt geen dubbele rijen aan. De testpartijen zijn fictief en bedoeld om lokaal te verwijderen of te overschrijven zodra er echte partijgegevens zijn.
+
 ## Eén stelling ophalen
 
 Start met `npm start` en vraag `GET http://localhost:3000/statements?index=0` op. `index` is verplicht en begint bij 0. Het is de positie binnen de actieve stellingen, gesorteerd op oplopend ID, niet het database-ID. Verhoog de index met 1 voor de volgende stelling. Als stellingen tussentijds worden verwijderd of gedeactiveerd, kunnen de posities verschuiven.
@@ -63,10 +67,22 @@ Alle actieve partijen worden meegenomen, gesorteerd op ID. `answer` is `eens`, `
 - `200`: één stelling met partijantwoorden.
 - `400`: ontbrekende, dubbele of ongeldige index; gebruik één niet-negatief, veilig geheel getal in decimale notatie, zonder voorloopnullen.
 - `404`: geen actieve stelling op deze positie, of een onbekende route.
-- `405`: gebruik GET; andere methoden zijn niet toegestaan.
+- `405`: `/statements` staat alleen GET en POST toe (zie hieronder); andere methoden zijn niet toegestaan.
 - `500`: ophalen mislukt; details worden alleen op de server gelogd.
 
 De query staat in `src/statements/get-statement.ts`, de indexvalidatie en response in `src/statements/index.ts`, en de HTTP-routering in `src/server.ts`. De server gebruikt de ingebouwde [Node.js HTTP-module](https://nodejs.org/api/http.html).
+
+## Stellingen beheren (CRUD)
+
+Naast het navigeren op index bestaat er een beheerroute om stellingen aan te maken, te lezen, te wijzigen en te verwijderen. Deze routes hebben, net als de rest van de backend, nog geen authenticatie.
+
+- `POST /statements` met `{ "text": "...", "isActive": true }`. Alleen `text` is verplicht; `isActive` is standaard `true`. `created_by` wordt automatisch gekoppeld aan een technisch beheerdersaccount (`statements-import@stemwijzer.invalid`, hetzelfde account als de seed-stellingen), dat bij de eerste aanroep wordt aangemaakt als het nog niet bestaat. Geeft `201` met `id`, `text`, `isActive`, `createdAt` en `updatedAt` terug.
+- `GET /statements/all` geeft alle stellingen terug (actief én inactief), gesorteerd op ID, elk met dezelfde velden als hierboven.
+- `GET /statements/:id` geeft één stelling op database-ID terug (niet de navigatie-index), of `404` als het ID niet bestaat.
+- `PATCH /statements/:id` met één of beide velden `text` en/of `isActive` in de body. Stuur ten minste één veld; onbekende velden of een leeg object geven `400`. Geeft de bijgewerkte stelling terug, of `404` als het ID niet bestaat.
+- `DELETE /statements/:id` verwijdert de stelling en geeft `204` terug, of `404` als het ID niet bestaat. Zolang er nog partijantwoorden naar deze stelling verwijzen, geeft dit `409`; verwijder die antwoorden eerst.
+
+Alle vier routes geven `400` bij ongeldige invoer of een ongeldig ID in de URL, `405` bij een niet-ondersteunde methode en `500` bij een databasefout. De code staat in `src/statements/` (`create-statement.ts`, `list-statements.ts`, `get-statement-by-id.ts`, `update-statement.ts`, `delete-statement.ts`, `validation.ts`), de routering in `src/server.ts`.
 
 ## Alle antwoorden in één keer matchen
 
@@ -151,3 +167,14 @@ Bij succes geeft de API `201 Created` terug met `id`, `name`, `description`, `im
 De route heeft op dit moment, net als de rest van deze backend, geen authenticatie of beheerderscontrole. Deze toegangscontrole moet nog worden toegevoegd voor gebruik als afgeschermde beheerfunctie.
 
 De code staat in `src/parties`, de interfaces in `src/types/party.interface.ts`. Partijen en matching delen JSON-verwerking via `src/http/read-json-body.ts`. `npm test` controleert succesvolle opslag, optionele velden, ongeldige invoer en foutafhandeling met een database in het geheugen.
+
+## Partijen beheren (CRUD)
+
+Naast het aanmaken bestaan er routes om partijen op te vragen, te wijzigen en te verwijderen. Ook deze routes hebben nog geen authenticatie.
+
+- `GET /parties` geeft alle partijen terug (actief én inactief), gesorteerd op ID, met dezelfde velden als bij het aanmaken.
+- `GET /parties/:id` geeft één partij op ID terug, of `404` als het ID niet bestaat.
+- `PATCH /parties/:id` met één of meer van `name`, `description`, `imageUrl` en `isActive` in de body, volgens dezelfde validatie als bij het aanmaken. Stuur ten minste één veld; een leeg of ongeldig object geeft `400`. Geeft de bijgewerkte partij terug, of `404` als het ID niet bestaat.
+- `DELETE /parties/:id` verwijdert de partij en geeft `204` terug, of `404` als het ID niet bestaat. Zolang er nog partijantwoorden van deze partij bestaan, geeft dit `409`; verwijder die antwoorden eerst.
+
+Alle vier routes geven `400` bij ongeldige invoer of een ongeldig ID in de URL, `405` bij een niet-ondersteunde methode en `500` bij een databasefout. De code staat in `src/parties/` (`list-parties.ts`, `get-party.ts`, `update-party.ts`, `delete-party.ts`, `validation.ts`), de routering in `src/server.ts`.
