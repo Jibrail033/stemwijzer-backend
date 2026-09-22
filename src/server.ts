@@ -1,6 +1,7 @@
 import type { Server } from 'node:http';
 import type { DatabaseSync } from 'node:sqlite';
 import { createServer } from 'node:http';
+import { handleLoginRequest } from './auth';
 import {
   handleStatementRequest,
   handleCreateStatementRequest,
@@ -34,6 +35,19 @@ export function createApp(database: DatabaseSync): Server {
     try {
       const url = new URL(request.url ?? '/', 'http://localhost');
       const method = request.method ?? '';
+
+      if (url.pathname === '/auth/login') {
+        if (method !== 'POST') {
+          response.writeHead(methodNotAllowed, { allow: 'POST' });
+          response.end(JSON.stringify({ error: 'Gebruik POST voor deze route.' }));
+
+          return;
+        }
+
+        void handleLoginRequest(database, request, response);
+
+        return;
+      }
 
       if (url.pathname === '/matching') {
         if (method !== 'POST') {
